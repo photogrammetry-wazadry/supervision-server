@@ -194,9 +194,15 @@ if __name__ == "__main__":
     for filename in os.listdir("./processing/"):
         path = os.path.join('./processing/', filename)
         shutil.move(path, "./input/")
+    
+    # Parse last model stopped on
+    model_index = 1
+    for dirname in os.listdir("./output"):
+        model_index = max(model_index, int(dirname.split('_')[0]) + 1)
+    
+    print(f"Starting on index {model_index}")
 
     # Parse input files and push them to queue (init queue)
-    model_index = 1
     for filename in os.listdir("./input/"):
         path = os.path.join('./input/', filename)  # Relative path to input
 
