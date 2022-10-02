@@ -1,18 +1,13 @@
-import time
 from collections import deque
 import os
-import eventlet
 import pandas as pd
-from fastapi import Response
 import glob
 from flask import Flask, send_from_directory, render_template, send_file, abort, request, flash, redirect, url_for
-from pathlib import Path, PurePath
 from dataclasses import dataclass
 import shutil
 from datetime import datetime
 import json
 import zipfile
-import pandas
 
 from ip import ip_address, port
 
@@ -21,7 +16,11 @@ async_mode = None
 app = Flask(__name__, static_url_path='')
 
 log_str = ""
-df_completed_tasks = pd.DataFrame(columns=["id", "datetime", "servername", "task_name", "start_index"])
+if not os.path.isfile("completed_tasks.csv"):
+    df_completed_tasks = pd.DataFrame(columns=["id", "datetime", "servername", "task_name", "start_index"])
+else:
+    df_completed_tasks = pd.read_csv("completed_tasks.csv")
+
 image_queue = deque()  # Queue to generate images of model
 model_queue = deque()  # Queue to generate model from images
 task_workers = dict()  # {server name: ImageTask, task start datetime}
@@ -175,6 +174,11 @@ if __name__ == "__main__":
     for needed_dir in needed_dirs:
         if not os.path.exists(needed_dir):
             os.mkdir(needed_dir)
+
+    # Move all files that have been in progress to input dir
+    for filename in os.listdir("./processing/"):
+        path = os.path.join('./processing/', filename)
+        shutil.move(path, "./input/")
 
     # Parse input files and push them to queue (init queue)
     model_index = 1
