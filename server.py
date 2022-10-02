@@ -170,6 +170,12 @@ def send_js(path):
 
 
 if __name__ == "__main__":
+    # Create needed directories
+    needed_dirs = ["done/", "input/", "output/", "processing/"]
+    for needed_dir in needed_dirs:
+        if not os.path.exists(needed_dir):
+            os.mkdir(needed_dir)
+
     # Parse input files and push them to queue (init queue)
     model_index = 1
     for filename in os.listdir("./input/"):
