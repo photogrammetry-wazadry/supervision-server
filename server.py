@@ -30,6 +30,7 @@ task_workers = dict()  # {server name: ImageTask, task start datetime}
 class Task:
     id: int
     name: str
+    task_type: str
     folder_name: str
     start_index: int
 
@@ -58,6 +59,20 @@ def return_image_queue():
 @app.route('/model_queue')
 def return_model_queue():
     return list(model_queue)
+
+
+@app.route('/disconnect/<name>')
+def disconnect(name):
+    task = task_workers[name]["task"]
+    shutil.move(os.path.join("processing/", task.name + ".zip"), os.path.join("input/", task.name + ".zip"))
+    
+    if task.task_type == "render":
+        image_queue.append(task)
+    else:
+        model_queue.append(task)
+    task_workers.pop(name, None)
+    
+    return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
 
 
 def send_model(name):
@@ -200,11 +215,10 @@ if __name__ == "__main__":
         #     print(f"skipped {render_folder_name}. already rendered")
         #     continue
 
-        task = Task(name=no_extension_name, folder_name=render_folder_name,
-                    start_index=1, id=model_index)
-
-        image_queue.append(task)
-        model_queue.append(task)
+        image_queue.append(Task(name=no_extension_name, folder_name=render_folder_name,
+                    start_index=1, id=model_index, task_type="render"))
+        model_queue.append(Task(name=no_extension_name, folder_name=render_folder_name,
+                    start_index=1, id=model_index, task_type="model"))
         model_index += 1
 
         # TODO: model queue process
