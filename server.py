@@ -1,8 +1,8 @@
-from threading import Thread
 import time
 from collections import deque
 import os
 import eventlet
+import pandas as pd
 from fastapi import Response
 import glob
 from flask import Flask, send_from_directory, render_template, send_file, abort, request, flash, redirect, url_for
@@ -12,6 +12,7 @@ import shutil
 from datetime import datetime
 import json
 import zipfile
+import pandas
 
 from ip import ip_address, port
 
@@ -20,6 +21,7 @@ async_mode = None
 app = Flask(__name__, static_url_path='')
 
 log_str = ""
+df_completed_tasks = pd.DataFrame(columns=["id", "datetime", "servername", "task_name", "start_index"])
 image_queue = deque()  # Queue to generate images of model
 model_queue = deque()  # Queue to generate model from images
 task_workers = dict()  # {server name: ImageTask, task start datetime}
@@ -125,27 +127,35 @@ def get_task(name, can_do_images, can_do_models):
 
 @app.route('/submit_task/<name>/<task_type>', methods=['GET', 'POST'])  # Client event to return finished work
 def submit_task(name, task_type):
+    global df_completed_tasks
+
     if request.method == 'POST':
         if task_type == "render":
             file = request.files['file']
 
-        if file.filename == '':
-            flash('No selected file')
-            return redirect(request.url)
-        if file:
-            task = task_workers[name]["task"]
-            output_dir = os.path.join("output/", task.folder_name)
+            if file:
+                task = task_workers[name]["task"]
+                output_dir = os.path.join("output/", task.folder_name)
 
-            if not os.path.exists(output_dir):
-                os.mkdir(output_dir)
+                if not os.path.exists(output_dir):
+                    os.mkdir(output_dir)
+                else:
+                    for file_name in glob.glob(os.path.join(output_dir, "*")):
+                        os.remove(file_name)
 
-            file.save(os.path.join(output_dir, file.filename))
+                file.save(os.path.join(output_dir, file.filename))
 
-            # Extract
-            with zipfile.ZipFile(os.path.join(output_dir, "render.zip"), 'r') as zip_ref:
-                zip_ref.extractall(output_dir)
+                # Extract
+                with zipfile.ZipFile(os.path.join(output_dir, "render.zip"), 'r') as zip_ref:
+                    zip_ref.extractall(output_dir)
 
-            shutil.move(os.path.join("./processing/", task.name + ".zip"), os.path.join("./done/", task.name + ".zip"))
+                shutil.move(os.path.join("./processing/", task.name + ".zip"),
+                            os.path.join("./done/", task.name + ".zip"))
+                df_completed_tasks = df_completed_tasks.append(
+                    {"id": task.id, "datetime": datetime.now().strftime("%m.%d.%Y_%H:%M:%S"),
+                     "servername": name, "task_name": task.name, "task_dir": task.folder_name,
+                     "start_index": task.start_index}, ignore_index=True)
+                df_completed_tasks.to_csv("completed_tasks.csv")
 
         elif task_type == "model":
             pass  # Save post request's model to output directory

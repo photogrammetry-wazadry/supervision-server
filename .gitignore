@@ -133,5 +133,7 @@ dmypy.json
 input/
 processing/
 done/
+output/
 
 ip.py
+completed_tasks.csv
