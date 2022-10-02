@@ -1,0 +1,3 @@
+[submodule "blender-sphere-renderer"]
+	path = blender-sphere-renderer
+	url = git@github.com:photogrammetry-wazadry/blender-sphere-renderer.git

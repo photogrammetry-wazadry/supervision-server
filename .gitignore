@@ -127,3 +127,11 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Custom
+.idea/
+input/
+processing/
+done/
+
+ip.py

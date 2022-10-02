@@ -1,0 +1,195 @@
+from threading import Thread
+import time
+from collections import deque
+import os
+import eventlet
+from fastapi import Response
+import glob
+from flask import Flask, send_from_directory, render_template, send_file, abort, request, flash, redirect, url_for
+from pathlib import Path, PurePath
+from dataclasses import dataclass
+import shutil
+from datetime import datetime
+import json
+import zipfile
+
+from ip import ip_address, port
+
+# Init app
+async_mode = None
+app = Flask(__name__, static_url_path='')
+
+log_str = ""
+image_queue = deque()  # Queue to generate images of model
+model_queue = deque()  # Queue to generate model from images
+task_workers = dict()  # {server name: ImageTask, task start datetime}
+
+
+@dataclass
+class Task:
+    id: int
+    name: str
+    folder_name: str
+    start_index: int
+
+
+# Return main page
+@app.route('/')
+def root():
+    return task_workers
+
+
+@app.route('/logs')
+def logs():
+    return log_str
+
+
+@app.route('/get_info')
+def get_info():
+    return task_workers
+
+
+@app.route('/image_queue')
+def return_image_queue():
+    return list(image_queue)
+
+
+@app.route('/model_queue')
+def return_model_queue():
+    return list(model_queue)
+
+
+def send_model(name):
+    global log_str
+
+    task = image_queue.popleft()
+    task_workers[name] = {"task": task, "start_time": datetime.now().strftime("%m.%d.%Y_%H:%M:%S")}
+    file_path = os.path.join("./input/", task.name + ".zip")
+
+    try:
+        response = send_file(file_path, as_attachment=True)
+        response.headers["start_index"] = task.start_index
+        response.headers["task_type"] = "render"  # Image
+
+        info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} render to server: {name}"
+        print(info)
+        log_str += info + '\n'
+
+        shutil.move(file_path, os.path.join("./processing/", task.name + ".zip"))
+        return response
+    except FileNotFoundError:
+        abort(404)
+
+
+def send_images(name):
+    global log_str
+
+    task = model_queue.popleft()
+    task_workers[name] = [task, datetime.now().strftime("%m.%d.%Y_%H:%M:%S")]
+
+    folder_path = os.path.join("./output/", task.folder_name)
+    shutil.make_archive(folder_path, 'zip', folder_path)
+    archive_path = os.path.join(folder_path + '.zip')
+    try:
+        response = send_file(archive_path, as_attachment=True)
+        response.headers["task_type"] = "model"  # Model
+
+        info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} model to server: {name}"
+        print(info)
+        log_str += info + '\n'
+
+        return response
+    except FileNotFoundError:
+        abort(404)
+
+
+@app.route('/get_task/<name>/<can_do_images>/<can_do_models>')  # Client event to get new task
+def get_task(name, can_do_images, can_do_models):
+    can_do_images = can_do_images == "true"
+    can_do_models = can_do_models == "true"
+
+    if can_do_images and can_do_models:
+        if len(image_queue) >= len(model_queue):
+            # Return model to client
+            return send_model(name)
+        else:
+            # Return images to client
+            return send_images(name)
+
+    elif can_do_images:
+        return send_model(name)
+
+    elif can_do_models:
+        return send_images(name)
+
+
+@app.route('/submit_task/<name>/<task_type>', methods=['GET', 'POST'])  # Client event to return finished work
+def submit_task(name, task_type):
+    if request.method == 'POST':
+        if task_type == "render":
+            file = request.files['file']
+
+        if file.filename == '':
+            flash('No selected file')
+            return redirect(request.url)
+        if file:
+            task = task_workers[name]["task"]
+            output_dir = os.path.join("output/", task.folder_name)
+
+            if not os.path.exists(output_dir):
+                os.mkdir(output_dir)
+
+            file.save(os.path.join(output_dir, file.filename))
+
+            # Extract
+            with zipfile.ZipFile(os.path.join(output_dir, "render.zip"), 'r') as zip_ref:
+                zip_ref.extractall(output_dir)
+
+            shutil.move(os.path.join("./processing/", task.name + ".zip"), os.path.join("./done/", task.name + ".zip"))
+
+        elif task_type == "model":
+            pass  # Save post request's model to output directory
+
+    return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
+
+
+# Get files from server (e.g libs)
+@app.route('/js/<path:path>')
+def send_js(path):
+    return send_from_directory('js', path)
+
+
+if __name__ == "__main__":
+    # Parse input files and push them to queue (init queue)
+    model_index = 1
+    for filename in os.listdir("./input/"):
+        path = os.path.join('./input/', filename)  # Relative path to input
+
+        no_extension_name = os.path.splitext(filename)[0]
+        render_folder_name = f"{str(model_index).zfill(4)}_{no_extension_name}"  # Folder name with index
+        output_dir = os.path.join("output/", render_folder_name)  # Relative output path
+
+        # files = glob.glob(os.path.join(output_dir, "*.png"))
+        # last_rendered_index = 0
+
+        # if len(files) != 0:
+        #     last_rendered = sorted(files)[-1]
+        #     last_rendered_index = int(os.path.splitext(PurePath(last_rendered).parts[-1])[0])
+
+        # if last_rendered_index == 300:
+        #     print(f"skipped {render_folder_name}. already rendered")
+        #     continue
+
+        task = Task(name=no_extension_name, folder_name=render_folder_name,
+                    start_index=1, id=model_index)
+
+        image_queue.append(task)
+        model_queue.append(task)
+        model_index += 1
+
+        # TODO: model queue process
+
+    app.secret_key = 'token'
+    app.config['SESSION_TYPE'] = 'filesystem'
+
+    app.run(host=ip_address, port=port)
