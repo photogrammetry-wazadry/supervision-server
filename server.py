@@ -1,15 +1,18 @@
 from collections import deque
 import os
 import pandas as pd
-import glob
 from flask import Flask, send_from_directory, render_template, send_file, abort, request, flash, redirect, url_for
 from dataclasses import dataclass
 import shutil
 from datetime import datetime
 import json
 import zipfile
+from glob import glob
+import subprocess
 
+from main import orbit_render, execute
 from ip import ip_address, port
+
 
 # Init app
 async_mode = None
@@ -63,6 +66,9 @@ def return_model_queue():
 
 @app.route('/disconnect/<name>')
 def disconnect(name):
+    if name not in task_workers.keys():
+        return json.dumps({'success': False}), 400, {'ContentType': 'application/json'}
+
     task = task_workers[name]["task"]
     shutil.move(os.path.join("processing/", task.name + ".zip"), os.path.join("input/", task.name + ".zip"))
 
@@ -75,23 +81,52 @@ def disconnect(name):
     return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
 
 
+@app.route('/disconnect_all')
+def disconnect_all():
+    for name in task_workers:
+        disconnect(name)
+
+    return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
+
+
 def send_model(name):
     global log_str
 
     task = image_queue.popleft()
+
     task_workers[name] = {"task": task, "start_time": datetime.now().strftime("%m.%d.%Y_%H:%M:%S")}
     file_path = os.path.join("./input/", task.name + ".zip")
 
+    output_dir = os.path.join("output/", task.folder_name)
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
+    else:
+        for file_name in glob(os.path.join(output_dir, "*")):
+            os.remove(file_name)
+
+    output_blend_file = os.path.join(output_dir, "project.blend")
+
+    # TODO: rewrite this function call via shell command
+    cmd = f'python3.10 -c "import bpy; from main import orbit_render; orbit_render(\'{task.name}.zip\')"'
+    popen = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, universal_newlines=True)
+    for stdout_line in iter(popen.stdout.readline, ""):
+        print(stdout_line, end='')
+    popen.stdout.close()
+    return_code = popen.wait()
+    if return_code:
+        raise subprocess.CalledProcessError(return_code, cmd)
+
     try:
-        response = send_file(file_path, as_attachment=True)
+        response = send_file("project.blend", as_attachment=True)
         response.headers["start_index"] = task.start_index
         response.headers["task_type"] = "render"  # Image
 
-        info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} render to server: {name}"
+        info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} for render to server: {name}"
         print(info)
         log_str += info + '\n'
 
         shutil.move(file_path, os.path.join("./processing/", task.name + ".zip"))
+        shutil.move("project.blend", output_blend_file)
         return response
     except FileNotFoundError:
         abort(404)
@@ -110,7 +145,7 @@ def send_images(name):
         response = send_file(archive_path, as_attachment=True)
         response.headers["task_type"] = "model"  # Model
 
-        info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} model to server: {name}"
+        info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} for modeling to server: {name}"
         print(info)
         log_str += info + '\n'
 
@@ -154,7 +189,7 @@ def submit_task(name, task_type):
                 if not os.path.exists(output_dir):
                     os.mkdir(output_dir)
                 else:
-                    for file_name in glob.glob(os.path.join(output_dir, "*")):
+                    for file_name in glob(os.path.join(output_dir, "*")):
                         os.remove(file_name)
 
                 file.save(os.path.join(output_dir, file.filename))
@@ -185,7 +220,7 @@ def send_js(path):
 
 if __name__ == "__main__":
     # Create needed directories
-    needed_dirs = ["done/", "input/", "output/", "processing/"]
+    needed_dirs = ["done/", "input/", "output/", "processing/", "temp/"]
     for needed_dir in needed_dirs:
         if not os.path.exists(needed_dir):
             os.mkdir(needed_dir)
@@ -198,7 +233,8 @@ if __name__ == "__main__":
     # Parse last model stopped on
     undone_indexes = list(range(1, 10000))
     for dirname in os.listdir("./output"):
-        undone_indexes.remove(int(dirname.split('_')[0]) + 1)
+        if len(os.listdir(os.path.join("./output", dirname))) > 1:
+            undone_indexes.remove(int(dirname.split('_')[0]))
 
     model_index = 0
     print(f"Starting on index {undone_indexes[model_index]}")
@@ -211,24 +247,11 @@ if __name__ == "__main__":
         render_folder_name = f"{str(undone_indexes[model_index]).zfill(4)}_{no_extension_name}"  # Folder name with index
         output_dir = os.path.join("output/", render_folder_name)  # Relative output path
 
-        # files = glob.glob(os.path.join(output_dir, "*.png"))
-        # last_rendered_index = 0
-
-        # if len(files) != 0:
-        #     last_rendered = sorted(files)[-1]
-        #     last_rendered_index = int(os.path.splitext(PurePath(last_rendered).parts[-1])[0])
-
-        # if last_rendered_index == 300:
-        #     print(f"skipped {render_folder_name}. already rendered")
-        #     continue
-
         image_queue.append(Task(name=no_extension_name, folder_name=render_folder_name,
                                 start_index=1, id=undone_indexes[model_index], task_type="render"))
         model_queue.append(Task(name=no_extension_name, folder_name=render_folder_name,
                                 start_index=1, id=undone_indexes[model_index], task_type="model"))
         model_index += 1
-
-        # TODO: model queue process
 
     app.secret_key = 'token'
     app.config['SESSION_TYPE'] = 'filesystem'

@@ -134,6 +134,7 @@ input/
 processing/
 done/
 output/
+temp/
 
 ip.py
 completed_tasks.csv
