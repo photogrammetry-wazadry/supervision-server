@@ -65,13 +65,13 @@ def return_model_queue():
 def disconnect(name):
     task = task_workers[name]["task"]
     shutil.move(os.path.join("processing/", task.name + ".zip"), os.path.join("input/", task.name + ".zip"))
-    
+
     if task.task_type == "render":
         image_queue.append(task)
     else:
         model_queue.append(task)
     task_workers.pop(name, None)
-    
+
     return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
 
 
@@ -194,20 +194,21 @@ if __name__ == "__main__":
     for filename in os.listdir("./processing/"):
         path = os.path.join('./processing/', filename)
         shutil.move(path, "./input/")
-    
+
     # Parse last model stopped on
-    model_index = 1
+    undone_indexes = list(range(1, 10000))
     for dirname in os.listdir("./output"):
-        model_index = max(model_index, int(dirname.split('_')[0]) + 1)
-    
-    print(f"Starting on index {model_index}")
+        undone_indexes.remove(int(dirname.split('_')[0]) + 1)
+
+    model_index = 0
+    print(f"Starting on index {undone_indexes[model_index]}")
 
     # Parse input files and push them to queue (init queue)
     for filename in os.listdir("./input/"):
         path = os.path.join('./input/', filename)  # Relative path to input
 
         no_extension_name = os.path.splitext(filename)[0]
-        render_folder_name = f"{str(model_index).zfill(4)}_{no_extension_name}"  # Folder name with index
+        render_folder_name = f"{str(undone_indexes[model_index]).zfill(4)}_{no_extension_name}"  # Folder name with index
         output_dir = os.path.join("output/", render_folder_name)  # Relative output path
 
         # files = glob.glob(os.path.join(output_dir, "*.png"))
@@ -222,9 +223,9 @@ if __name__ == "__main__":
         #     continue
 
         image_queue.append(Task(name=no_extension_name, folder_name=render_folder_name,
-                    start_index=1, id=model_index, task_type="render"))
+                                start_index=1, id=undone_indexes[model_index], task_type="render"))
         model_queue.append(Task(name=no_extension_name, folder_name=render_folder_name,
-                    start_index=1, id=model_index, task_type="model"))
+                                start_index=1, id=undone_indexes[model_index], task_type="model"))
         model_index += 1
 
         # TODO: model queue process
