@@ -67,9 +67,9 @@ def disconnect(name):
     shutil.move(os.path.join("processing/", task.name + ".zip"), os.path.join("input/", task.name + ".zip"))
 
     if task.task_type == "render":
-        image_queue.append(task)
+        image_queue.appendleft(task)
     else:
-        model_queue.append(task)
+        model_queue.appendleft(task)
     task_workers.pop(name, None)
 
     return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
