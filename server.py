@@ -9,6 +9,7 @@ import json
 import zipfile
 from glob import glob
 import subprocess
+import time
 
 from main import orbit_render, execute
 from ip import ip_address, port
@@ -24,6 +25,7 @@ if not os.path.isfile("completed_tasks.csv"):
 else:
     df_completed_tasks = pd.read_csv("completed_tasks.csv")
 
+server_busy = False
 image_queue = deque()  # Queue to generate images of model
 model_queue = deque()  # Queue to generate model from images
 task_workers = dict()  # {server name: ImageTask, task start datetime}
@@ -90,7 +92,7 @@ def disconnect_all():
 
 
 def send_model(name):
-    global log_str
+    global log_str, server_busy
 
     task = image_queue.popleft()
 
@@ -127,13 +129,15 @@ def send_model(name):
 
         shutil.move(file_path, os.path.join("./processing/", task.name + ".zip"))
         shutil.move("project.blend", output_blend_file)
+        server_busy = False
+
         return response
     except FileNotFoundError:
         abort(404)
 
 
 def send_images(name):
-    global log_str
+    global log_str, server_busy
 
     task = model_queue.popleft()
     task_workers[name] = [task, datetime.now().strftime("%m.%d.%Y_%H:%M:%S")]
@@ -148,6 +152,7 @@ def send_images(name):
         info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} for modeling to server: {name}"
         print(info)
         log_str += info + '\n'
+        server_busy = False
 
         return response
     except FileNotFoundError:
@@ -156,6 +161,11 @@ def send_images(name):
 
 @app.route('/get_task/<name>/<can_do_images>/<can_do_models>')  # Client event to get new task
 def get_task(name, can_do_images, can_do_models):
+    global server_busy
+    while server_busy:
+        time.sleep(1)
+
+    server_busy = True
     can_do_images = can_do_images == "true"
     can_do_models = can_do_models == "true"
 
@@ -189,7 +199,10 @@ def submit_task(name, task_type):
                 if not os.path.exists(output_dir):
                     os.mkdir(output_dir)
                 else:
-                    for file_name in glob(os.path.join(output_dir, "*")):
+                    for file_name in glob(os.path.join(output_dir, "*.png")):
+                        os.remove(file_name)
+
+                    for file_name in glob(os.path.join(output_dir, "*.zip")):
                         os.remove(file_name)
 
                 file.save(os.path.join(output_dir, file.filename))
@@ -238,6 +251,7 @@ if __name__ == "__main__":
 
     model_index = 0
     print(f"Starting on index {undone_indexes[model_index]}")
+    print(undone_indexes[:10])
 
     # Parse input files and push them to queue (init queue)
     for filename in os.listdir("./input/"):
