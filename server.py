@@ -247,6 +247,7 @@ if __name__ == "__main__":
     undone_indexes = list(range(1, 10000))
     for dirname in os.listdir("./output"):
         if len(os.listdir(os.path.join("./output", dirname))) > 1:
+            print(dirname)
             undone_indexes.remove(int(dirname.split('_')[0]))
 
     model_index = 0
@@ -263,9 +264,12 @@ if __name__ == "__main__":
 
         image_queue.append(Task(name=no_extension_name, folder_name=render_folder_name,
                                 start_index=1, id=undone_indexes[model_index], task_type="render"))
-        model_queue.append(Task(name=no_extension_name, folder_name=render_folder_name,
-                                start_index=1, id=undone_indexes[model_index], task_type="model"))
         model_index += 1
+    
+    for folder_name in os.listdir("output/"):
+        if not os.path.exists(os.path.join("output/", folder_name, "model.zip")):
+            model_queue.append(Task(name='_'.join(folder_name.split("_")[1:]), folder_name=folder_name,
+                                    start_index=1, id=undone_indexes[model_index], task_type="model"))
 
     app.secret_key = 'token'
     app.config['SESSION_TYPE'] = 'filesystem'
