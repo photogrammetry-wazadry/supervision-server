@@ -143,7 +143,7 @@ def send_images(name):
     task_workers[name] = [task, datetime.now().strftime("%m.%d.%Y_%H:%M:%S")]
 
     folder_path = os.path.join("./output/", task.folder_name)
-    shutil.make_archive(folder_path, 'zip', folder_path)
+    shutil.make_archive("photos", 'zip', folder_path)
     archive_path = os.path.join(folder_path + '.zip')
     try:
         response = send_file(archive_path, as_attachment=True)
@@ -189,38 +189,33 @@ def submit_task(name, task_type):
     global df_completed_tasks
 
     if request.method == 'POST':
-        if task_type == "render":
-            file = request.files['file']
+        task = task_workers[name]["task"]
+        output_dir = os.path.join("output/", task.folder_name)
 
-            if file:
-                task = task_workers[name]["task"]
-                output_dir = os.path.join("output/", task.folder_name)
+        if not os.path.exists(output_dir):
+            os.mkdir(output_dir)
+        else:
+            for file_name in glob(os.path.join(output_dir, "*.png")):
+                os.remove(file_name)
 
-                if not os.path.exists(output_dir):
-                    os.mkdir(output_dir)
-                else:
-                    for file_name in glob(os.path.join(output_dir, "*.png")):
-                        os.remove(file_name)
+            for file_name in glob(os.path.join(output_dir, "*.zip")):
+                os.remove(file_name)
 
-                    for file_name in glob(os.path.join(output_dir, "*.zip")):
-                        os.remove(file_name)
+        file = request.files['file']
 
-                file.save(os.path.join(output_dir, file.filename))
+        file.save(os.path.join(output_dir, file.filename))
 
-                # Extract
-                with zipfile.ZipFile(os.path.join(output_dir, "render.zip"), 'r') as zip_ref:
-                    zip_ref.extractall(output_dir)
+        # Extract
+        with zipfile.ZipFile(os.path.join(output_dir, "render.zip"), 'r') as zip_ref:
+            zip_ref.extractall(output_dir)
 
-                shutil.move(os.path.join("./processing/", task.name + ".zip"),
-                            os.path.join("./done/", task.name + ".zip"))
-                df_completed_tasks = df_completed_tasks.append(
-                    {"id": task.id, "datetime": datetime.now().strftime("%m.%d.%Y_%H:%M:%S"),
-                     "servername": name, "task_name": task.name, "task_dir": task.folder_name,
-                     "start_index": task.start_index}, ignore_index=True)
-                df_completed_tasks.to_csv("completed_tasks.csv")
-
-        elif task_type == "model":
-            pass  # Save post request's model to output directory
+        shutil.move(os.path.join("./processing/", task.name + ".zip"),
+                    os.path.join("./done/", task.name + ".zip"))
+        df_completed_tasks = df_completed_tasks.append(
+            {"id": task.id, "datetime": datetime.now().strftime("%m.%d.%Y_%H:%M:%S"),
+             "servername": name, "task_name": task.name, "task_dir": task.folder_name,
+             "start_index": task.start_index}, ignore_index=True)
+        df_completed_tasks.to_csv("completed_tasks.csv")
 
     return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
 
