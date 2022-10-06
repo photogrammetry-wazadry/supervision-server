@@ -72,9 +72,9 @@ def disconnect(name):
         return json.dumps({'success': False}), 400, {'ContentType': 'application/json'}
 
     task = task_workers[name]["task"]
-    shutil.move(os.path.join("processing/", task.name + ".zip"), os.path.join("input/", task.name + ".zip"))
 
     if task.task_type == "render":
+        shutil.move(os.path.join("processing/", task.name + ".zip"), os.path.join("input/", task.name + ".zip"))
         image_queue.appendleft(task)
     else:
         model_queue.appendleft(task)
@@ -85,7 +85,8 @@ def disconnect(name):
 
 @app.route('/disconnect_all')
 def disconnect_all():
-    for name in task_workers:
+    locked_tasks = task_workers
+    for name in locked_tasks:
         disconnect(name)
 
     return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
@@ -93,7 +94,8 @@ def disconnect_all():
 
 def send_model(name):
     global log_str, server_busy
-
+    
+    print("Starting model send")
     task = image_queue.popleft()
 
     task_workers[name] = {"task": task, "start_time": datetime.now().strftime("%m.%d.%Y_%H:%M:%S")}
@@ -138,15 +140,19 @@ def send_model(name):
 
 def send_images(name):
     global log_str, server_busy
-
+    
+    print("Starting image send")
     task = model_queue.popleft()
-    task_workers[name] = [task, datetime.now().strftime("%m.%d.%Y_%H:%M:%S")]
+    task_workers[name] = {"task": task, "start_time": datetime.now().strftime("%m.%d.%Y_%H:%M:%S")}
+   
 
     folder_path = os.path.join("./output/", task.folder_name)
+    print(f"Archive started, path {folder_path}")
     shutil.make_archive("photos", 'zip', folder_path)
-    archive_path = os.path.join(folder_path + '.zip')
+    print("Archive finished")
+
     try:
-        response = send_file(archive_path, as_attachment=True)
+        response = send_file("photos.zip", as_attachment=True)
         response.headers["task_type"] = "model"  # Model
 
         info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} for modeling to server: {name}"
@@ -168,6 +174,14 @@ def get_task(name, can_do_images, can_do_models):
     server_busy = True
     can_do_images = can_do_images == "true"
     can_do_models = can_do_models == "true"
+
+    if name in task_workers.keys():
+        task = task_workers[name]["task"]
+        if task.task_type == "render":
+            image_queue.appendleft(task)
+        else:
+            model_queue.appendleft(task)
+        task_workers.pop(name, None)
 
     if can_do_images and can_do_models:
         if len(image_queue) >= len(model_queue):
@@ -191,31 +205,33 @@ def submit_task(name, task_type):
     if request.method == 'POST':
         task = task_workers[name]["task"]
         output_dir = os.path.join("output/", task.folder_name)
-
-        if not os.path.exists(output_dir):
-            os.mkdir(output_dir)
-        else:
-            for file_name in glob(os.path.join(output_dir, "*.png")):
-                os.remove(file_name)
-
-            for file_name in glob(os.path.join(output_dir, "*.zip")):
-                os.remove(file_name)
+        
+        if task_type == "render":
+            if not os.path.exists(output_dir):
+                os.mkdir(output_dir)
+            else:
+                for file_name in glob(os.path.join(output_dir, "*.png")):
+                    os.remove(file_name)
 
         file = request.files['file']
+        full_file_path = os.path.join(output_dir, file.filename)
 
-        file.save(os.path.join(output_dir, file.filename))
-
+        file.save(full_file_path)
+        
         # Extract
-        with zipfile.ZipFile(os.path.join(output_dir, "render.zip"), 'r') as zip_ref:
+        with zipfile.ZipFile(full_file_path, 'r') as zip_ref:
             zip_ref.extractall(output_dir)
-
-        shutil.move(os.path.join("./processing/", task.name + ".zip"),
-                    os.path.join("./done/", task.name + ".zip"))
+        
+        if task_type == "render":
+            shutil.move(os.path.join("./processing/", task.name + ".zip"),
+                        os.path.join("./done/", task.name + ".zip"))
+        
         df_completed_tasks = df_completed_tasks.append(
             {"id": task.id, "datetime": datetime.now().strftime("%m.%d.%Y_%H:%M:%S"),
              "servername": name, "task_name": task.name, "task_dir": task.folder_name,
              "start_index": task.start_index}, ignore_index=True)
         df_completed_tasks.to_csv("completed_tasks.csv")
+        task_workers.pop(name, None)
 
     return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
 
@@ -261,10 +277,12 @@ if __name__ == "__main__":
                                 start_index=1, id=undone_indexes[model_index], task_type="render"))
         model_index += 1
     
+    model_index = 0
     for folder_name in os.listdir("output/"):
         if not os.path.exists(os.path.join("output/", folder_name, "model.zip")):
             model_queue.append(Task(name='_'.join(folder_name.split("_")[1:]), folder_name=folder_name,
-                                    start_index=1, id=undone_indexes[model_index], task_type="model"))
+                                    start_index=1, id=model_index, task_type="model"))
+        model_index += 1
 
     app.secret_key = 'token'
     app.config['SESSION_TYPE'] = 'filesystem'

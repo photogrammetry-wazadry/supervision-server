@@ -135,6 +135,8 @@ processing/
 done/
 output/
 temp/
+redo/
 
+photos.zip
 ip.py
 completed_tasks.csv
