@@ -10,6 +10,7 @@ import zipfile
 from glob import glob
 import subprocess
 import time
+import filetype
 
 from main import orbit_render, execute
 from ip import ip_address, port
@@ -92,11 +93,12 @@ def disconnect_all():
     return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
 
 
-def send_model(name):
+def send_model(name, task=None):
     global log_str, server_busy
     
     print("Starting model send")
-    task = image_queue.popleft()
+    if task is None:
+        task = image_queue.popleft()
 
     task_workers[name] = {"task": task, "start_time": datetime.now().strftime("%m.%d.%Y_%H:%M:%S")}
     file_path = os.path.join("./input/", task.name + ".zip")
@@ -121,7 +123,8 @@ def send_model(name):
         raise subprocess.CalledProcessError(return_code, cmd)
 
     try:
-        response = send_file("project.blend", as_attachment=True)
+        mimetype = filetype.guess_mime("project.blend")
+        response = send_file("project.blend", as_attachment=True, mimetype=mimetype)
         response.headers["start_index"] = task.start_index
         response.headers["task_type"] = "render"  # Image
 
@@ -138,11 +141,12 @@ def send_model(name):
         abort(404)
 
 
-def send_images(name):
+def send_images(name, task=None):
     global log_str, server_busy
     
     print("Starting image send")
-    task = model_queue.popleft()
+    if task is None:
+        task = model_queue.popleft()
     task_workers[name] = {"task": task, "start_time": datetime.now().strftime("%m.%d.%Y_%H:%M:%S")}
    
 
@@ -152,7 +156,8 @@ def send_images(name):
     print("Archive finished")
 
     try:
-        response = send_file("photos.zip", as_attachment=True)
+        mimetype = filetype.guess_mime("photos.zip")
+        response = send_file("photos.zip", as_attachment=True, mimetype=mimetype)
         response.headers["task_type"] = "model"  # Model
 
         info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} for modeling to server: {name}"
@@ -169,33 +174,30 @@ def send_images(name):
 def get_task(name, can_do_images, can_do_models):
     global server_busy
     while server_busy:
-        time.sleep(1)
+        time.sleep(10)
 
     server_busy = True
     can_do_images = can_do_images == "true"
     can_do_models = can_do_models == "true"
-
+    
+    task = None
     if name in task_workers.keys():
+        print("Job for this client already found, restoring last request")
         task = task_workers[name]["task"]
-        if task.task_type == "render":
-            image_queue.appendleft(task)
-        else:
-            model_queue.appendleft(task)
-        task_workers.pop(name, None)
 
     if can_do_images and can_do_models:
         if len(image_queue) >= len(model_queue):
             # Return model to client
-            return send_model(name)
+            return send_model(name, task)
         else:
             # Return images to client
-            return send_images(name)
+            return send_images(name, task)
 
     elif can_do_images:
-        return send_model(name)
+        return send_model(name, task)
 
     elif can_do_models:
-        return send_images(name)
+        return send_images(name, task)
 
 
 @app.route('/submit_task/<name>/<task_type>', methods=['GET', 'POST'])  # Client event to return finished work
@@ -232,6 +234,7 @@ def submit_task(name, task_type):
              "start_index": task.start_index}, ignore_index=True)
         df_completed_tasks.to_csv("completed_tasks.csv")
         task_workers.pop(name, None)
+        print(task_workers)
 
     return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
 
