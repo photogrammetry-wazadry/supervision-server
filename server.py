@@ -29,6 +29,7 @@ else:
 server_busy = False
 image_queue = deque()  # Queue to generate images of model
 model_queue = deque()  # Queue to generate model from images
+skip_queue = deque()   # Queue for all tasks that got and exception of some kind
 task_workers = dict()  # {server name: ImageTask, task start datetime}
 
 
@@ -67,6 +68,11 @@ def return_model_queue():
     return list(model_queue)
 
 
+@app.route('/skip_queue')
+def return_skip_queue():
+    return list(skip_queue)
+
+
 @app.route('/disconnect/<name>')
 def disconnect(name):
     if name not in task_workers.keys():
@@ -91,6 +97,19 @@ def disconnect_all():
         disconnect(name)
 
     return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
+
+
+@app.route('/skip/<name>')
+def skip(name):
+    if name in task_workers.keys():
+        print(f"Skipping model {task_workers[name]['task'].name} for server {name}")
+        skip_queue.append(task_workers[name]["task"])
+        task_workers.pop(name, None)
+
+        return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
+
+    else:
+        return json.dumps({'success': False}), 400, {'ContentType': 'application/json'}
 
 
 def send_model(name, task=None):
@@ -174,7 +193,8 @@ def send_images(name, task=None):
 def get_task(name, can_do_images, can_do_models):
     global server_busy
     while server_busy:
-        time.sleep(10)
+        print("Archive in progress, waiting in line")
+        time.sleep(60)
 
     server_busy = True
     can_do_images = can_do_images == "true"
