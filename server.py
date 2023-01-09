@@ -13,7 +13,7 @@ import time
 import filetype
 
 from main import orbit_render, execute
-from ip import ip_address, port
+from config import ip_address, port, python_call
 
 
 # Init app
@@ -132,7 +132,7 @@ def send_model(name, task=None):
     output_blend_file = os.path.join(output_dir, "project.blend")
 
     # TODO: rewrite this function call via shell command
-    cmd = f'python3.10 -c "import bpy; from main import orbit_render; orbit_render(\'{task.name}.zip\')"'
+    cmd = f'{python_call} -c "import bpy; from main import orbit_render; orbit_render(\'{task.name}.zip\')"'
     popen = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, universal_newlines=True)
     for stdout_line in iter(popen.stdout.readline, ""):
         print(stdout_line, end='')
