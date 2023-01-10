@@ -198,14 +198,11 @@ def send_images(name, task=None):
         task = task_get("scan", "processing", name)
     task_workers[name] = task
 
-    folder_path = os.path.join("./output/", str(task.id).zfill(5))
-    print(f"Archive started, path {folder_path}")
-    shutil.make_archive("photos", 'zip', folder_path)
-    print("Archive finished")
+    archive_path = os.path.join("./output/", str(task.id).zfill(5), "render.zip")
 
     try:
-        mimetype = filetype.guess_mime("photos.zip")
-        response = send_file("photos.zip", as_attachment=True, mimetype=mimetype)
+        mimetype = filetype.guess_mime(archive_path)
+        response = send_file(archive_path, as_attachment=True, mimetype=mimetype)
         response.headers["task_type"] = "model"  # Model
 
         info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} for modeling to server: {name}"
