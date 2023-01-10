@@ -1,4 +1,3 @@
-from collections import deque
 import os
 import pandas as pd
 from flask import Flask, send_from_directory, render_template, send_file, abort, request, flash, redirect, url_for
@@ -15,21 +14,63 @@ import filetype
 from main import orbit_render, execute
 from config import ip_address, port, python_call
 
-
 # Init app
 async_mode = None
 app = Flask(__name__, static_url_path='')
 
 log_str = ""
-if not os.path.isfile("completed_tasks.csv"):
-    df_completed_tasks = pd.DataFrame(columns=["id", "datetime", "servername", "task_name", "start_index"])
+
+# Handle task database
+last_task_id = -1
+columns_list = ["id", "filename", "import_datetime", "render_status", "render_start_time", "render_end_time", "render_servername",
+                "scan_status", "scan_start_time", "scan_start_time", "scan_servername"]
+
+if not os.path.isfile("tasks.csv"):
+    print("No task database found. Generating new")
+    df_tasks = pd.DataFrame(columns=columns_list)
+
+    if not os.path.exists("./input/"):
+        print("No models to import. Put zip files to ./input or refer to documentation")
+        exit(0)
+
+    for filename in os.listdir("./input/"):
+        last_task_id += 1
+        new_df = pd.DataFrame.from_records([{"id": last_task_id, "filename": '.'.join(filename.split('.')[:-1]),
+                                             "import_datetime": datetime.now().strftime("%m.%d.%Y_%H:%M:%S"),
+                                             "render_status": "none", "scan_status": "none"}], columns=columns_list)
+
+        # df_tasks.loc[last_task_id] = new_df
+        df_tasks = pd.concat([df_tasks.loc[:], new_df]).reset_index(drop=True)
+
+    df_tasks.to_csv("tasks.csv", index=False)
+    print(f"Imported {last_task_id + 1} 3D models\n")
+
 else:
-    df_completed_tasks = pd.read_csv("completed_tasks.csv")
+    df_tasks = pd.read_csv("tasks.csv", index_col=False)
+    # print(df_tasks)
+
+    last_task_id = max(df_tasks["id"])
+    print("Loaded task database. Looking for new models")
+    df_tasks["render_status"] = df_tasks["render_status"].replace("processing", "none")
+    df_tasks["scan_status"] = df_tasks["scan_status"].replace("processing", "none")
+
+    new_count = 0
+    for filename in os.listdir("./input/"):
+        if '.'.join(filename.split('.')[:-1]) not in list(df_tasks["filename"]):
+            last_task_id += 1
+            new_count += 1
+            new_df = pd.DataFrame({"id": last_task_id, "filename": '.'.join(filename.split('.')[:-1]),
+                                                 "import_datetime": datetime.now().strftime("%m.%d.%Y_%H:%M:%S"),
+                                                 "render_status": "none", "scan_status": "none"}, index=[0])
+
+            df_tasks = pd.concat([df_tasks.loc[:], new_df]).reset_index(drop=True)
+
+    df_tasks.to_csv("tasks.csv", index=False)
+    if new_count > 0:
+        print(f"Imported {new_count} new 3D models\n")
+
 
 server_busy = False
-image_queue = deque()  # Queue to generate images of model
-model_queue = deque()  # Queue to generate model from images
-skip_queue = deque()   # Queue for all tasks that got and exception of some kind
 task_workers = dict()  # {server name: ImageTask, task start datetime}
 
 
@@ -37,15 +78,30 @@ task_workers = dict()  # {server name: ImageTask, task start datetime}
 class Task:
     id: int
     name: str
-    task_type: str
-    folder_name: str
-    start_index: int
+    type: str
+    start_time: str
+
+
+def change_status(task, new_status):
+    df_tasks[df_tasks["id"] == task.id][task.type + "_status"] = new_status
+    df_tasks.to_csv("tasks.csv", index=False)
+
+
+def task_get(task_type, new_status, server_name):
+    task = df_tasks[df_tasks[task_type + "_status"] == "none"].iloc[0]
+
+    df_tasks.iloc[task.id, columns_list.index(task_type + "_start_time")] = datetime.now().strftime("%m.%d.%Y_%H:%M:%S")
+    df_tasks.iloc[task.id, columns_list.index(task_type + "_status")] = new_status
+    df_tasks.iloc[task.id, columns_list.index(task_type + "_servername")] = server_name
+
+    df_tasks.to_csv("tasks.csv", index=False)
+    return Task(int(task["id"]), task["filename"], task_type, task[task_type + "_start_time"])
 
 
 # Return main page
 @app.route('/')
 def root():
-    return task_workers
+    return df_tasks.to_html()
 
 
 @app.route('/logs')
@@ -53,38 +109,14 @@ def logs():
     return log_str
 
 
-@app.route('/get_info')
-def get_info():
-    return task_workers
-
-
-@app.route('/image_queue')
-def return_image_queue():
-    return list(image_queue)
-
-
-@app.route('/model_queue')
-def return_model_queue():
-    return list(model_queue)
-
-
-@app.route('/skip_queue')
-def return_skip_queue():
-    return list(skip_queue)
-
-
 @app.route('/disconnect/<name>')
 def disconnect(name):
     if name not in task_workers.keys():
         return json.dumps({'success': False}), 400, {'ContentType': 'application/json'}
 
-    task = task_workers[name]["task"]
+    task = task_workers[name]
 
-    if task.task_type == "render":
-        shutil.move(os.path.join("processing/", task.name + ".zip"), os.path.join("input/", task.name + ".zip"))
-        image_queue.appendleft(task)
-    else:
-        model_queue.appendleft(task)
+    change_status(task, "none")
     task_workers.pop(name, None)
 
     return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
@@ -103,8 +135,8 @@ def disconnect_all():
 def skip(name):
     if name in task_workers.keys():
         print(f"Skipping model {task_workers[name]['task'].name} for server {name}")
-        skip_queue.append(task_workers[name]["task"])
-        task_workers.pop(name, None)
+        change_status(task_workers[name], "skip")
+        task_workers.pop(name, "none")
 
         return json.dumps({'success': True}), 200, {'ContentType': 'application/json'}
 
@@ -114,15 +146,15 @@ def skip(name):
 
 def send_model(name, task=None):
     global log_str, server_busy
-    
+
     print("Starting model send")
     if task is None:
-        task = image_queue.popleft()
+        task = task_get("render", "processing", name)
+        print(task)
 
-    task_workers[name] = {"task": task, "start_time": datetime.now().strftime("%m.%d.%Y_%H:%M:%S")}
-    file_path = os.path.join("./input/", task.name + ".zip")
+    task_workers[name] = task
 
-    output_dir = os.path.join("output/", task.folder_name)
+    output_dir = os.path.join("output/", str(task.id).zfill(5))
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
     else:
@@ -144,14 +176,12 @@ def send_model(name, task=None):
     try:
         mimetype = filetype.guess_mime("project.blend")
         response = send_file("project.blend", as_attachment=True, mimetype=mimetype)
-        response.headers["start_index"] = task.start_index
         response.headers["task_type"] = "render"  # Image
 
         info = f"[{datetime.now().strftime('%m.%d.%Y_%H:%M:%S')}] Gave task {task.name} for render to server: {name}"
         print(info)
         log_str += info + '\n'
 
-        shutil.move(file_path, os.path.join("./processing/", task.name + ".zip"))
         shutil.move("project.blend", output_blend_file)
         server_busy = False
 
@@ -162,14 +192,13 @@ def send_model(name, task=None):
 
 def send_images(name, task=None):
     global log_str, server_busy
-    
+
     print("Starting image send")
     if task is None:
-        task = model_queue.popleft()
-    task_workers[name] = {"task": task, "start_time": datetime.now().strftime("%m.%d.%Y_%H:%M:%S")}
-   
+        task = task_get("scan", "processing", name)
+    task_workers[name] = task
 
-    folder_path = os.path.join("./output/", task.folder_name)
+    folder_path = os.path.join("./output/", str(task.id).zfill(5))
     print(f"Archive started, path {folder_path}")
     shutil.make_archive("photos", 'zip', folder_path)
     print("Archive finished")
@@ -199,14 +228,16 @@ def get_task(name, can_do_images, can_do_models):
     server_busy = True
     can_do_images = can_do_images == "true"
     can_do_models = can_do_models == "true"
-    
+
     task = None
     if name in task_workers.keys():
         print("Job for this client already found, restoring last request")
-        task = task_workers[name]["task"]
+        task = task_workers[name]
 
     if can_do_images and can_do_models:
-        if len(image_queue) >= len(model_queue):
+        print(df_tasks[df_tasks["render_status"] != "completed"]["id"])
+        if min(df_tasks[df_tasks["render_status"] != "completed"]["id"]) >= min(
+                df_tasks[df_tasks["scan_status"] != "completed"]["id"]):
             # Return model to client
             return send_model(name, task)
         else:
@@ -222,12 +253,12 @@ def get_task(name, can_do_images, can_do_models):
 
 @app.route('/submit_task/<name>/<task_type>', methods=['GET', 'POST'])  # Client event to return finished work
 def submit_task(name, task_type):
-    global df_completed_tasks
+    global df_tasks
 
     if request.method == 'POST':
-        task = task_workers[name]["task"]
-        output_dir = os.path.join("output/", task.folder_name)
-        
+        task = task_workers[name]
+        output_dir = os.path.join("output/", str(task.id).zfill(5))
+
         if task_type == "render":
             if not os.path.exists(output_dir):
                 os.mkdir(output_dir)
@@ -239,20 +270,16 @@ def submit_task(name, task_type):
         full_file_path = os.path.join(output_dir, file.filename)
 
         file.save(full_file_path)
-        
+
         # Extract
         with zipfile.ZipFile(full_file_path, 'r') as zip_ref:
             zip_ref.extractall(output_dir)
-        
-        if task_type == "render":
-            shutil.move(os.path.join("./processing/", task.name + ".zip"),
-                        os.path.join("./done/", task.name + ".zip"))
-        
-        df_completed_tasks = df_completed_tasks.append(
-            {"id": task.id, "datetime": datetime.now().strftime("%m.%d.%Y_%H:%M:%S"),
-             "servername": name, "task_name": task.name, "task_dir": task.folder_name,
-             "start_index": task.start_index}, ignore_index=True)
-        df_completed_tasks.to_csv("completed_tasks.csv")
+
+        df_tasks.iloc[task.id, columns_list.index(task_type + "_end_time")] = datetime.now().strftime(
+            "%m.%d.%Y_%H:%M:%S")
+        df_tasks.iloc[task.id, columns_list.index(task_type + "_status")] = "completed"
+
+        df_tasks.to_csv("tasks.csv", index=False)
         task_workers.pop(name, None)
         print(task_workers)
 
@@ -267,45 +294,10 @@ def send_js(path):
 
 if __name__ == "__main__":
     # Create needed directories
-    needed_dirs = ["done/", "input/", "output/", "processing/", "temp/"]
+    needed_dirs = ["done/", "input/", "output/", "temp/"]
     for needed_dir in needed_dirs:
         if not os.path.exists(needed_dir):
             os.mkdir(needed_dir)
-
-    # Move all files that have been in progress to input dir
-    for filename in os.listdir("./processing/"):
-        path = os.path.join('./processing/', filename)
-        shutil.move(path, "./input/")
-
-    # Parse last model stopped on
-    undone_indexes = list(range(1, 10000))
-    for dirname in os.listdir("./output"):
-        if len(os.listdir(os.path.join("./output", dirname))) > 1:
-            print(dirname)
-            undone_indexes.remove(int(dirname.split('_')[0]))
-
-    model_index = 0
-    print(f"Starting on index {undone_indexes[model_index]}")
-    print(undone_indexes[:10])
-
-    # Parse input files and push them to queue (init queue)
-    for filename in os.listdir("./input/"):
-        path = os.path.join('./input/', filename)  # Relative path to input
-
-        no_extension_name = os.path.splitext(filename)[0]
-        render_folder_name = f"{str(undone_indexes[model_index]).zfill(4)}_{no_extension_name}"  # Folder name with index
-        output_dir = os.path.join("output/", render_folder_name)  # Relative output path
-
-        image_queue.append(Task(name=no_extension_name, folder_name=render_folder_name,
-                                start_index=1, id=undone_indexes[model_index], task_type="render"))
-        model_index += 1
-    
-    model_index = 0
-    for folder_name in os.listdir("output/"):
-        if not os.path.exists(os.path.join("output/", folder_name, "model.zip")):
-            model_queue.append(Task(name='_'.join(folder_name.split("_")[1:]), folder_name=folder_name,
-                                    start_index=1, id=model_index, task_type="model"))
-        model_index += 1
 
     app.secret_key = 'token'
     app.config['SESSION_TYPE'] = 'filesystem'
