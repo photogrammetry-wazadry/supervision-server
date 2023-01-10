@@ -1,12 +1,10 @@
-from collections import deque
 import os
 import pandas as pd
-import numpy as np
 from flask import Flask, send_from_directory, render_template, send_file, abort, request, flash, redirect, url_for
 from dataclasses import dataclass
 import shutil
 from datetime import datetime
-import dataclasses, json
+import json
 import zipfile
 from glob import glob
 import subprocess
@@ -84,13 +82,6 @@ class Task:
     start_time: str
 
 
-class EnhancedJSONEncoder(json.JSONEncoder):
-    def default(self, o):
-        if dataclasses.is_dataclass(o):
-            return dataclasses.asdict(o)
-        return super().default(o)
-
-
 def change_status(task, new_status):
     df_tasks[df_tasks["id"] == task.id][task.type + "_status"] = new_status
     df_tasks.to_csv("tasks.csv", index=False)
@@ -116,11 +107,6 @@ def root():
 @app.route('/logs')
 def logs():
     return log_str
-
-
-@app.route('/workers')
-def get_info():
-    return json.dumps(task_workers, cls=EnhancedJSONEncoder)
 
 
 @app.route('/disconnect/<name>')
